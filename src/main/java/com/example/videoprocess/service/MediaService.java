@@ -126,6 +126,11 @@ public class MediaService {
                 outputBuilder.setDuration((long) (request.getDuration() * 1000), TimeUnit.MILLISECONDS);
             }
 
+            if (request.getBitrate() != null) {
+                // Convert kbps to bps
+                outputBuilder.setVideoBitRate(request.getBitrate() * 1000);
+            }
+
             // Build video filters
             List<String> videoFilters = new ArrayList<>();
             if (request.getCropWidth() != null && request.getCropHeight() != null) {

@@ -27,6 +27,7 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 | `cropY` | Integer | No | The Y-coordinate of the top-left corner for cropping. Defaults to 0 if cropWidth/Height are set. | 裁剪区域左上角的 Y 坐标。默认为 0。 |
 | `cropWidth` | Integer | No | The width of the crop area. Both `cropWidth` and `cropHeight` must be set to enable cropping. | 裁剪区域的宽度。必须同时设置高度才生效。 |
 | `cropHeight` | Integer | No | The height of the crop area. Both `cropWidth` and `cropHeight` must be set to enable cropping. | 裁剪区域的高度。必须同时设置宽度才生效。 |
+| `bitrate` | Long | No | The video/audio bitrate in kbps (e.g., 1000 for 1Mbps). | 视频/音频比特率，单位 kbps（例如 1000 代表 1Mbps）。 |
 | `subtitleObject` | String | No | The name of a subtitle file (e.g., `.srt`) in the MinIO bucket to burn into the video. | MinIO 中的字幕文件名（如 `.srt`），用于烧录进视频。 |
 
 ### Example Request / 请求示例
@@ -40,6 +41,7 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
   "cropY": 100,
   "cropWidth": 1280,
   "cropHeight": 720,
+  "bitrate": 2000,
   "subtitleObject": "captions.srt"
 }
 ```
