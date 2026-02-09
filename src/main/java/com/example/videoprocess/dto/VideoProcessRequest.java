@@ -15,7 +15,7 @@ public class VideoProcessRequest extends BaseProcessRequest {
     private Integer cropWidth;
     private Integer cropHeight;
     
-    private String subtitleObject; // MinIO object name for SRT file
+    private SubtitleOptions subtitle; // Unified subtitle options
 
     private Long bitrate; // kbps
 }

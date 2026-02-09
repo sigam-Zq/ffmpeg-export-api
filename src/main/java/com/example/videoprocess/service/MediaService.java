@@ -85,7 +85,15 @@ public class MediaService {
                             // Content type could be guessed, but optional for now
                             .build());
         }
-        return outputObjectName;
+        return getFullUrl(outputObjectName);
+    }
+
+    private String getFullUrl(String objectName) {
+        String endpoint = minioConfig.getEndpoint();
+        if (!endpoint.endsWith("/")) {
+            endpoint += "/";
+        }
+        return endpoint + minioConfig.getBucketName() + "/" + objectName;
     }
 
     public String processVideo(VideoProcessRequest request) throws Exception {
@@ -141,12 +149,37 @@ public class MediaService {
                 videoFilters.add(crop);
             }
 
-            if (StringUtils.hasText(request.getSubtitleObject())) {
-                tempSubtitle = downloadFile(request.getSubtitleObject());
+            if (request.getSubtitle() != null && StringUtils.hasText(request.getSubtitle().getObjectName())) {
+                tempSubtitle = downloadFile(request.getSubtitle().getObjectName());
                 // Note: Windows path escaping might be tricky for FFmpeg subtitles filter.
                 // Usually forward slashes work best in FFmpeg even on Windows.
                 String subPath = tempSubtitle.toAbsolutePath().toString().replace("\\", "/").replace(":", "\\:");
-                videoFilters.add("subtitles='" + subPath + "'");
+                
+                StringBuilder subFilter = new StringBuilder("subtitles='").append(subPath).append("'");
+                
+                // Build force_style
+                List<String> styles = new ArrayList<>();
+                // Use a Chinese-supporting font by default if available in Docker
+                styles.add("Fontname=Noto Sans CJK SC"); 
+                
+                if (request.getSubtitle().getFontSize() != null) {
+                    styles.add("FontSize=" + request.getSubtitle().getFontSize());
+                }
+                if (request.getSubtitle().getMarginV() != null) {
+                    styles.add("MarginV=" + request.getSubtitle().getMarginV());
+                }
+                if (request.getSubtitle().getMarginL() != null) {
+                    styles.add("MarginL=" + request.getSubtitle().getMarginL());
+                }
+                if (request.getSubtitle().getAlignment() != null) {
+                    styles.add("Alignment=" + request.getSubtitle().getAlignment());
+                }
+                
+                if (!styles.isEmpty()) {
+                    subFilter.append(":force_style='").append(String.join(",", styles)).append("'");
+                }
+                
+                videoFilters.add(subFilter.toString());
             }
 
             if (!videoFilters.isEmpty()) {

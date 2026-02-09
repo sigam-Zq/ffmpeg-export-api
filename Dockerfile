@@ -1,9 +1,9 @@
 # Use a base image with Java 17 (Eclipse Temurin is a popular choice)
 FROM eclipse-temurin:17-jre-jammy
 
-# Install FFmpeg
+# Install FFmpeg and fonts for Chinese support
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg fonts-noto-cjk && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

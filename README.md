@@ -12,8 +12,8 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 ## 1. Video Processing / 视频处理
 **Endpoint**: `/media/video/process`
 **Method**: `POST`
-**Description**: Process video files including clipping, cropping, transcoding, and adding subtitles.
-**描述**: 处理视频文件，支持视频剪辑、画面裁剪、格式转码以及添加字幕。
+**Description**: Process video files including clipping, cropping, transcoding, bitrate adjustment, and adding subtitles with styling options.
+**描述**: 处理视频文件，支持视频剪辑、画面裁剪、格式转码、码率调整以及添加带有样式选项的字幕。
 
 ### Request Body Parameters / 请求体参数
 
@@ -27,8 +27,19 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 | `cropY` | Integer | No | The Y-coordinate of the top-left corner for cropping. Defaults to 0 if cropWidth/Height are set. | 裁剪区域左上角的 Y 坐标。默认为 0。 |
 | `cropWidth` | Integer | No | The width of the crop area. Both `cropWidth` and `cropHeight` must be set to enable cropping. | 裁剪区域的宽度。必须同时设置高度才生效。 |
 | `cropHeight` | Integer | No | The height of the crop area. Both `cropWidth` and `cropHeight` must be set to enable cropping. | 裁剪区域的高度。必须同时设置宽度才生效。 |
-| `bitrate` | Long | No | The video/audio bitrate in kbps (e.g., 1000 for 1Mbps). | 视频/音频比特率，单位 kbps（例如 1000 代表 1Mbps）。 |
-| `subtitleObject` | String | No | The name of a subtitle file (e.g., `.srt`) in the MinIO bucket to burn into the video. | MinIO 中的字幕文件名（如 `.srt`），用于烧录进视频。 |
+| `bitrate` | Long | No | The video bitrate in kbps (e.g., 2000 for 2Mbps). | 视频比特率，单位 kbps（例如 2000 代表 2Mbps）。 |
+| `subtitle` | Object | No | Subtitle configuration object. | 字幕配置对象。 |
+
+### Subtitle Options (`subtitle`) / 字幕选项
+
+| Parameter (参数) | Type (类型) | Required (必填) | Description (English) | Description (中文) |
+| :--- | :--- | :--- | :--- | :--- |
+| `objectName` | String | **Yes** | The name of the subtitle file (e.g., `.srt`) in MinIO. | MinIO 中的字幕文件名（如 `.srt`）。 |
+| `fontSize` | Integer | No | Font size for the subtitles. | 字幕字体大小。 |
+| `fontColor` | String | No | Font color in ASS format (e.g., `&HFFFFFF`). | 字幕字体颜色（ASS 格式，如 `&HFFFFFF`）。 |
+| `marginV` | Integer | No | Vertical margin (bottom distance). | 垂直边距（底部距离）。 |
+| `marginL` | Integer | No | Left margin. | 左侧边距。 |
+| `alignment` | Integer | No | Alignment (e.g., 2 for bottom-center). | 对齐方式（例如 2 表示底部居中）。 |
 
 ### Example Request / 请求示例
 ```json
@@ -42,7 +53,14 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
   "cropWidth": 1280,
   "cropHeight": 720,
   "bitrate": 2000,
-  "subtitleObject": "captions.srt"
+  "subtitle": {
+    "objectName": "captions.srt",
+    "fontSize": 24,
+    "fontColor": "&HFFFFFF",
+    "marginV": 20,
+    "marginL": 10,
+    "alignment": 2
+  }
 }
 ```
 
@@ -50,7 +68,8 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 ```json
 {
   "message": "Video processed successfully",
-  "outputObject": "output-12345.mp4"
+  "outputObject": "output-12345.mp4",
+  "url": "http://minio-server:9000/bucket/output-12345.mp4"
 }
 ```
 
@@ -92,7 +111,8 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 ```json
 {
   "message": "Image processed successfully",
-  "outputObject": "output-67890.png"
+  "outputObject": "output-67890.png",
+  "url": "http://minio-server:9000/bucket/output-67890.png"
 }
 ```
 
@@ -129,6 +149,29 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 ```json
 {
   "message": "Audio processed successfully",
-  "outputObject": "output-11223.mp3"
+  "outputObject": "output-11223.mp3",
+  "url": "http://minio-server:9000/bucket/output-11223.mp3"
 }
+```
+
+---
+
+## Docker Deployment / Docker 部署
+
+The project includes a `Dockerfile` optimized for media processing.
+本项目包含一个专为媒体处理优化的 `Dockerfile`。
+
+### Key Features / 主要特性
+- **Pre-installed FFmpeg**: The container comes with FFmpeg installed.
+- **Chinese Font Support**: `fonts-noto-cjk` is installed to ensure correct rendering of Chinese subtitles.
+- **JVM Support**: Built on a Java runtime environment.
+
+### Docker Compose
+A `docker-compose.yml` is provided to orchestrate the application and MinIO. It mounts the `config` directory to allow external configuration of `application.yaml`.
+
+提供了 `docker-compose.yml` 来编排应用和 MinIO。它挂载了 `config` 目录，允许从外部配置 `application.yaml`。
+
+```yaml
+volumes:
+  - ./config:/app/config
 ```
