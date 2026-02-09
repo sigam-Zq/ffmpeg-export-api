@@ -10,11 +10,11 @@ spring:
       max-request-size: 500MB
 
 minio:
-  endpoint: http://yzt.local:9000
+  endpoint: http://192.168.1.143:9000
   access-key: Zw9EbInxAdaNdC4rTfTo
   secret-key: JpGXiOOfsSlz2nfNcfsZmgF1ySAJdSfSSfHS7F0i
   bucket-name: yzt
 
 ffmpeg:
-  path: ${FFMPEG_PATH:ffmpeg}
-  ffprobe-path: ${FFPROBE_PATH:ffprobe}
+  path: D:\\desktop\\tools\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffmpeg.exe
+  ffprobe-path: D:\\desktop\\tools\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffprobe.exe
