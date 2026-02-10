@@ -235,7 +235,7 @@ public class MediaService {
                 ? minioConfig.getExternalEndpoint() 
                 : minioConfig.getEndpoint();
                 
-        if (!endpoint.endsWith("/")) {
+        if (!endpoint.endsWith("/")) { 
             endpoint += "/";
         }
         return endpoint + minioConfig.getBucketName() + "/" + objectName;
