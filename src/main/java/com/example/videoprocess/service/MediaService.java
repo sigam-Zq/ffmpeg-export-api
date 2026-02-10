@@ -230,7 +230,11 @@ public class MediaService {
     }
 
     private String getFullUrl(String objectName) {
-        String endpoint = minioConfig.getEndpoint();
+        // Use externalEndpoint if configured, otherwise fallback to internal endpoint
+        String endpoint = StringUtils.hasText(minioConfig.getExternalEndpoint()) 
+                ? minioConfig.getExternalEndpoint() 
+                : minioConfig.getEndpoint();
+                
         if (!endpoint.endsWith("/")) {
             endpoint += "/";
         }

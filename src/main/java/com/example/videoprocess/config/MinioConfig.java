@@ -12,6 +12,11 @@ import org.springframework.context.annotation.Configuration;
 public class MinioConfig {
 
     private String endpoint;
+    /**
+     * External endpoint for accessing MinIO from outside (e.g., browser).
+     * Used for generating public URLs. If not set, defaults to 'endpoint'.
+     */
+    private String externalEndpoint;
     private String accessKey;
     private String secretKey;
     private String bucketName;

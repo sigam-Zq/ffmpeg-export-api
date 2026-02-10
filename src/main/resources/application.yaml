@@ -11,6 +11,10 @@ spring:
 
 minio:
   endpoint: http://192.168.1.143:9000
+  # The external URL for accessing MinIO (e.g. from browser or frontend)
+  # 外部访问 MinIO 的地址（例如从浏览器或前端访问）
+  # If empty, it will default to 'endpoint'
+  external-endpoint: http://localhost:9000 
   access-key: Zw9EbInxAdaNdC4rTfTo
   secret-key: JpGXiOOfsSlz2nfNcfsZmgF1ySAJdSfSSfHS7F0i
   bucket-name: yzt
