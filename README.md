@@ -75,7 +75,54 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 
 ---
 
-## 2. Image Processing / 图片处理
+## 2. HLS Transcoding (Multi-bitrate) / HLS 多码率切片
+**Endpoint**: `/media/hls/process`
+**Method**: `POST`
+**Description**: Transcode a video into multi-bitrate HLS streams (m3u8/ts) based on its resolution and store them in MinIO.
+**描述**: 根据视频分辨率将其转码为多码率 HLS 流 (m3u8/ts) 并存储到 MinIO 中。
+
+### Request Body Parameters / 请求体参数
+
+| Parameter (参数) | Type (类型) | Required (必填) | Description (English) | Description (中文) |
+| :--- | :--- | :--- | :--- | :--- |
+| `objectName` | String | **Yes** | The name of the input video file stored in MinIO. | MinIO 中的输入视频文件名（相对路径）。 |
+| `targetPath` | String | **Yes** | The target directory path in MinIO to store the HLS files. | MinIO 中存储 HLS 文件的目标目录路径。 |
+
+### Example Request / 请求示例
+```json
+{
+  "objectName": "movies/avatar.mp4",
+  "targetPath": "hls/avatar_stream"
+}
+```
+
+### Response / 响应
+```json
+{
+  "message": "HLS processing completed",
+  "streams": [
+    {
+      "resolution": "1920x1080",
+      "m3u8Path": "hls/avatar_stream/stream_0.m3u8",
+      "url": "http://minio-server:9000/bucket/hls/avatar_stream/stream_0.m3u8"
+    },
+    {
+      "resolution": "1280x720",
+      "m3u8Path": "hls/avatar_stream/stream_1.m3u8",
+      "url": "http://minio-server:9000/bucket/hls/avatar_stream/stream_1.m3u8"
+    },
+    {
+      "resolution": "854x480",
+      "m3u8Path": "hls/avatar_stream/stream_2.m3u8",
+      "url": "http://minio-server:9000/bucket/hls/avatar_stream/stream_2.m3u8"
+    }
+  ]
+}
+```
+
+---
+
+## 3. Image Processing / 图片处理
 **Endpoint**: `/media/image/process`
 **Method**: `POST`
 **Description**: Process image files including scaling, cropping, rotating, and applying filters.
@@ -118,7 +165,7 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 
 ---
 
-## 3. Audio Processing / 音频处理
+## 4. Audio Processing / 音频处理
 **Endpoint**: `/media/audio/process`
 **Method**: `POST`
 **Description**: Process audio files including clipping, volume adjustment, and format conversion.
@@ -168,7 +215,6 @@ The project includes a `Dockerfile` optimized for media processing.
 
 ### Docker Compose
 A `docker-compose.yml` is provided to orchestrate the application and MinIO. It mounts the `config` directory to allow external configuration of `application.yaml`.
-
 提供了 `docker-compose.yml` 来编排应用和 MinIO。它挂载了 `config` 目录，允许从外部配置 `application.yaml`。
 
 ```yaml

@@ -38,27 +38,9 @@ public class MediaService {
 
     private final MinioClient minioClient;
     private final MinioConfig minioConfig;
+    private final FFmpeg ffmpeg;
+    private final FFprobe ffprobe;
 
-    @Value("${ffmpeg.path:ffmpeg}")
-    private String ffmpegPath;
-
-    @Value("${ffmpeg.ffprobe-path:ffprobe}")
-    private String ffprobePath;
-
-    private FFmpeg ffmpeg;
-    private FFprobe ffprobe;
-
-    @PostConstruct
-    public void init() {
-        try {
-            ffmpeg = new FFmpeg(ffmpegPath);
-            ffprobe = new FFprobe(ffprobePath);
-            log.info("FFmpeg/FFprobe initialized successfully.");
-        } catch (Exception e) {
-            log.error("Failed to initialize FFmpeg/FFprobe: {}", e.getMessage());
-            throw new RuntimeException("Failed to initialize FFmpeg/FFprobe. Please check your application.yaml configuration.", e);
-        }
-    }
 
     // Helper to download file
     private Path downloadFile(String objectName) throws Exception {
