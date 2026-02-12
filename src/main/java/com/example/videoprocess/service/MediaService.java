@@ -157,7 +157,7 @@ public class MediaService {
                         int marginL = (options != null && options.getMarginL() != null) ? options.getMarginL() : 10;
                         int alignment = (options != null && options.getAlignment() != null) ? options.getAlignment() : 2;
                         
-                        String newStyle = String.format("Style: Default,%s,%d,%s,&H000000,&H000000,&H000000,0,0,0,0,100,100,0,0,1,1,1,%d,%d,%d,%d,1",
+                        String newStyle = String.format("Style: Default,%s,%d,%s,&H000000,&H000000,&H000000,0,0,0,0,100,100,0,0,1,0,0,%d,%d,%d,%d,1",
                                 fontName, fontSize, primaryColor, alignment, marginL, marginL, marginV);
                         
                         writer.write(newStyle);
