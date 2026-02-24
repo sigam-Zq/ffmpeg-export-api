@@ -75,43 +75,32 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
 - `color="#RRGGBB"` → 映射为 ASS 字幕主颜色（如果请求体中的 `fontColor` 不为空，则以请求为准）
 - `size="N"` → 作为基础字体大小（如果请求体中的 `subtitle.fontSize` 有值，则以请求为准）
 
-#### X/Y Coordinate Rules / X/Y 坐标规则
+#### X/Y Coordinate Rules (Pixel-based) / X/Y 像素坐标规则
 
 1. **Coordinate System / 坐标系**
-   - `X` is the horizontal coordinate from the **left** edge, `Y` is the vertical coordinate from the **top** edge.
-   - 坐标原点在左上角：`X` 为水平方向（从左向右），`Y` 为垂直方向（从上向下）。
-   - The coordinates are interpreted in the internal ASS script resolution (`PlayResX`, `PlayResY`), not directly in final video pixels.
-   - 坐标是基于 ASS 脚本的内部分辨率（`PlayResX` / `PlayResY`）来理解的，而不是直接等同于最终视频像素。
+   - `X` is the horizontal pixel coordinate from the **left** edge of the final video frame.
+   - `Y` is the vertical pixel coordinate from the **top** edge of the final video frame.
+   - If cropping is enabled (`cropWidth` / `cropHeight` are set), the coordinate system is the **cropped output region**:
+     - `0 ≤ X ≤ cropWidth`
+     - `0 ≤ Y ≤ cropHeight`
+   - 坐标原点在最终输出画面的左上角：
+     - `X` 为水平方向像素（从左向右）
+     - `Y` 为垂直方向像素（从上向下）
+   - 如果启用裁剪（设置了 `cropWidth` / `cropHeight`），坐标系对应于裁剪后的输出区域：
+     - `0 ≤ X ≤ cropWidth`
+     - `0 ≤ Y ≤ cropHeight`
 
-2. **Practical Range / 推荐范围**
-   - In practice, `PlayResX` / `PlayResY` are set by FFmpeg when converting SRT → ASS and are usually in a range like `384x288`, `640x360`, etc.
-   - 实际运行时，`PlayResX` / `PlayResY` 由 FFmpeg 在 SRT 转 ASS 时写入，通常是 `384x288`、`640x360` 等固定值。
-   - To ensure subtitles are visible on screen, keep X and Y within the rough range of the internal resolution:
-     - `0 ≤ X ≤ PlayResX`
-     - `0 ≤ Y ≤ PlayResY`
-   - 为确保字幕一定在画面内显示，建议让 X/Y 大致落在内部分辨率范围内：
-     - `0 ≤ X ≤ PlayResX`
-     - `0 ≤ Y ≤ PlayResY`
+2. **How it works internally / 内部转换规则**
+   - The service treats X/Y as pixel coordinates in the final output frame (after cropping).
+   - Internally, these pixel coordinates are mapped into the ASS script resolution (`PlayResX`, `PlayResY`) so that subtitles render at the correct visual position.
+   - 您填写的 X/Y 会被视为最终输出画面上的像素坐标（已考虑裁剪）。
+   - 服务内部会将这些像素坐标按比例映射到 ASS 的脚本分辨率（`PlayResX` / `PlayResY`），以确保字幕在画面中的视觉位置准确。
 
-3. **Why some large values are invisible? / 为什么某些较大的坐标看不到字幕？**
-   - If you set a very large Y (for example `Y:1180`) while `PlayResY` is only `360`, the subtitle will be placed **below** the visible canvas and will not be rendered.
-   - 如果 `PlayResY` 只有 `360`，但你写了 `Y:1180`，字幕在内部坐标系中已经落在“画布之外”，播放器会直接不渲染该行字幕。
-   - This explains why changing from small coordinates (`X:50 Y:30`) to very large ones (`X:360 Y:1180`) may cause some lines to disappear.
-   - 这也是为什么从小坐标（`X:50 Y:30`）换成很大的坐标（`X:360 Y:1180`）后，有些字幕会“看不见”的原因。
-
-4. **Recommended Usage / 推荐使用方式**
-   - For most cases, keep X/Y in a moderate range (for example X/Y within a few hundred units) instead of using very large numbers.
-   - 一般情况下建议 X/Y 使用较温和的数值（几百以内），不要用过大的数值。
-   - If you want the subtitle near the bottom, you can:
-     - Use `alignment = 2` (bottom-center) and a relatively small Y;
-     - Or test with several Y values until it visually fits your video.
-   - 如果希望字幕靠近底部：
-     - 可以设置 `alignment = 2`（底部居中），并配合较小的 Y；
-     - 或通过多次调整 Y 值来找到合适的位置。
-
-> Note: the current implementation does **not** automatically map X/Y to the final cropped video resolution.
-> Coordinates are applied directly in ASS space, so extreme values may fall outside the visible area.
-> 注意：当前实现**不会**自动根据最终裁剪后的视频分辨率去缩放 X/Y，坐标会直接用于 ASS 脚本空间，因此极端值可能落在可视区域之外。
+3. **Practical Notes / 使用注意事项**
+   - X/Y values greater than the output width/height will be clamped to the frame edges.
+   - 参数中的 X/Y 超出输出宽高范围时，会自动被限制在画面边界之内。
+   - You can think of X/Y exactly as “video pixels” after applying your crop settings.
+   - 可以直接把 X/Y 理解为“应用裁剪后的最终视频像素坐标”，不需要关心 ASS 的 PlayRes 细节。
 
 ### Example Request / 请求示例
 ```json

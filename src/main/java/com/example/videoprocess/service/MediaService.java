@@ -72,17 +72,12 @@ public class MediaService {
         return getFullUrl(outputObjectName);
     }
 
-    /**
-     * Preprocesses SRT subtitle files to support non-standard "X:123 Y:456" coordinates in timestamp lines.
-     * Converts the entire file to ASS format to ensure proper positioning and styling.
-     */
-    private Path preprocessSubtitle(Path inputPath, com.example.videoprocess.dto.SubtitleOptions options) {
+    private Path preprocessSubtitle(Path inputPath, com.example.videoprocess.dto.SubtitleOptions options,
+                                    int outputWidth, int outputHeight) {
         try {
-            // 1. Scan and extract X:Y coordinates, create a clean SRT without them
             Path cleanSrtPath = Files.createTempFile("clean-", ".srt");
-            List<String> positions = new ArrayList<>();
-            
-            // Regex to find X:123 Y:456 format
+            List<int[]> positions = new ArrayList<>();
+
             java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(.*-->.*)\\s+X:(\\d+)\\s+Y:(\\d+).*");
             
             try (java.io.BufferedReader reader = Files.newBufferedReader(inputPath);
@@ -93,16 +88,14 @@ public class MediaService {
                     java.util.regex.Matcher matcher = pattern.matcher(line);
                     if (matcher.matches()) {
                         String cleanTimestamp = matcher.group(1).trim();
-                        String x = matcher.group(2);
-                        String y = matcher.group(3);
+                        int x = Integer.parseInt(matcher.group(2));
+                        int y = Integer.parseInt(matcher.group(3));
                         
                         writer.write(cleanTimestamp);
                         writer.newLine();
                         
-                        // Store the pos tag for this subtitle block
-                        positions.add("{\\pos(" + x + "," + y + ")}");
+                        positions.add(new int[]{x, y});
                     } else if (line.contains("-->")) {
-                         // Normal timestamp line without X:Y, add placeholder (null) to keep index sync
                          writer.write(line);
                          writer.newLine();
                          positions.add(null);
@@ -112,9 +105,7 @@ public class MediaService {
                     }
                 }
             }
-            
-            // 2. Convert clean SRT to ASS using FFmpeg
-            // This handles HTML tags (<font>, etc.) conversion to ASS tags automatically
+
             Path assPath = Files.createTempFile("converted-", ".ass");
             FFmpegBuilder builder = new FFmpegBuilder()
                     .setInput(cleanSrtPath.toString())
@@ -125,7 +116,6 @@ public class MediaService {
             
             new FFmpegExecutor(ffmpeg, ffprobe).createJob(builder).run();
             
-            // 3. Inject styles and positions into the ASS file
             Path finalAssPath = Files.createTempFile("final-", ".ass");
             try (java.io.BufferedReader reader = Files.newBufferedReader(assPath);
                  java.io.BufferedWriter writer = Files.newBufferedWriter(finalAssPath)) {
@@ -133,20 +123,34 @@ public class MediaService {
                 String line;
                 int eventIndex = 0;
                 boolean inEvents = false;
+                int playResX = -1;
+                int playResY = -1;
                 
                 while ((line = reader.readLine()) != null) {
-                    if (line.trim().startsWith("Style: Default")) {
-                        // Replace Default style with user options
-                        // ASS Style: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-                        // Default: Style: Default,Arial,16,&Hffffff,&Hffffff,&H0,&H0,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,0
-                        
+                    String trimmed = line.trim();
+                    if (trimmed.startsWith("PlayResX")) {
+                        int idx = trimmed.indexOf(':');
+                        if (idx > 0) {
+                            try {
+                                playResX = Integer.parseInt(trimmed.substring(idx + 1).trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+                        writer.write(line);
+                    } else if (trimmed.startsWith("PlayResY")) {
+                        int idx = trimmed.indexOf(':');
+                        if (idx > 0) {
+                            try {
+                                playResY = Integer.parseInt(trimmed.substring(idx + 1).trim());
+                            } catch (NumberFormatException ignored) {
+                            }
+                        }
+                        writer.write(line);
+                    } else if (trimmed.startsWith("Style: Default")) {
                         String fontName = "Noto Sans CJK SC";
                         int fontSize = (options != null && options.getFontSize() != null) ? options.getFontSize() : 24;
                         String primaryColor = (options != null && StringUtils.hasText(options.getFontColor())) ? options.getFontColor() : "&HFFFFFF";
-                        // Ensure color is in &H format if not already
                         if (primaryColor.startsWith("#")) {
-                             // Convert #RRGGBB to &HBBGGRR (ASS uses BGR)
-                             // Simple assumption: input is #RRGGBB
                              String r = primaryColor.substring(1, 3);
                              String g = primaryColor.substring(3, 5);
                              String b = primaryColor.substring(5, 7);
@@ -161,17 +165,31 @@ public class MediaService {
                                 fontName, fontSize, primaryColor, alignment, marginL, marginL, marginV);
                         
                         writer.write(newStyle);
-                    } else if (line.trim().equals("[Events]")) {
+                    } else if (trimmed.equals("[Events]")) {
                         inEvents = true;
                         writer.write(line);
                     } else if (inEvents && line.startsWith("Dialogue:")) {
-                        // Format: Dialogue: 0,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
-                        // We need to inject {\pos(x,y)} at the start of Text
-                        
                         if (eventIndex < positions.size()) {
-                            String posTag = positions.get(eventIndex);
+                            int[] xy = positions.get(eventIndex);
+                            String posTag = null;
+                            if (xy != null) {
+                                int px = xy[0];
+                                int py = xy[1];
+                                int baseWidth = outputWidth > 0 ? outputWidth : 1;
+                                int baseHeight = outputHeight > 0 ? outputHeight : 1;
+                                int prx = playResX > 0 ? playResX : baseWidth;
+                                int pry = playResY > 0 ? playResY : baseHeight;
+                                double scaleX = (double) prx / (double) baseWidth;
+                                double scaleY = (double) pry / (double) baseHeight;
+                                int assX = (int) Math.round(px * scaleX);
+                                int assY = (int) Math.round(py * scaleY);
+                                if (assX < 0) assX = 0;
+                                if (assY < 0) assY = 0;
+                                if (assX > prx) assX = prx;
+                                if (assY > pry) assY = pry;
+                                posTag = "{\\pos(" + assX + "," + assY + ")}";
+                            }
                             if (posTag != null) {
-                                // Find the 9th comma to locate Text start
                                 int textStart = 0;
                                 for (int i = 0; i < 9; i++) {
                                     textStart = line.indexOf(',', textStart) + 1;
@@ -266,7 +284,9 @@ public class MediaService {
                 outputBuilder.setVideoBitRate(request.getBitrate() * 1000);
             }
 
-            // Build video filters
+            int outputWidth = request.getCropWidth() != null ? request.getCropWidth() : videoStream.width;
+            int outputHeight = request.getCropHeight() != null ? request.getCropHeight() : videoStream.height;
+
             List<String> videoFilters = new ArrayList<>();
             if (request.getCropWidth() != null && request.getCropHeight() != null) {
                 String crop = String.format("crop=%d:%d:%d:%d", 
@@ -278,8 +298,7 @@ public class MediaService {
 
             if (request.getSubtitle() != null && StringUtils.hasText(request.getSubtitle().getObjectName())) {
                 Path originalSubtitle = downloadFile(request.getSubtitle().getObjectName());
-                // Preprocess subtitle to handle custom X:Y positioning and convert to ASS
-                tempSubtitle = preprocessSubtitle(originalSubtitle, request.getSubtitle());
+                tempSubtitle = preprocessSubtitle(originalSubtitle, request.getSubtitle(), outputWidth, outputHeight);
                 
                 // Note: Windows path escaping might be tricky for FFmpeg subtitles filter.
                 // Usually forward slashes work best in FFmpeg even on Windows.
