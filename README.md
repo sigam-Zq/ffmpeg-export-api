@@ -41,6 +41,78 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 | `marginL` | Integer | No | Left margin. | 左侧边距。 |
 | `alignment` | Integer | No | Alignment (e.g., 2 for bottom-center). | 对齐方式（例如 2 表示底部居中）。 |
 
+### Subtitle SRT Format and X/Y Rules / 字幕 SRT 格式与 X/Y 规则
+
+The video processing API supports a **customized SRT format** to control subtitle position and style.
+视频处理接口支持一种**带自定义坐标和样式的 SRT 格式**，用于精确控制字幕位置和样式。
+
+#### Basic SRT Line Format / 基本 SRT 行格式
+
+Each subtitle block follows the standard SRT structure, with an extra `X:` and `Y:` at the end of the timestamp line:
+每一条字幕采用标准 SRT 结构，只是在时间轴行末尾增加了 `X:` 和 `Y:`：
+
+```text
+1
+00:00:00,000 --> 00:00:07,150 X:50 Y:30
+<font color="#ffffff" size="50">你好</font>
+
+2
+00:00:07,244 --> 00:00:14,744 X:360 Y:1180
+<font color="#ffffff" size="50">Hello</font>
+```
+
+- `X:...` / `Y:...` are used as the **subtitle position**.  
+  The service converts them to ASS `{\pos(x,y)}` internally.
+- `X:` / `Y:` 用于定义**字幕位置**，服务内部会将其转换为 ASS 的 `{\pos(x,y)}`。
+
+HTML-like `<font>` tags in the text are supported and will be converted to ASS styles:
+字幕文本中支持 HTML 风格的 `<font>` 标签，最终会被转换为 ASS 样式：
+
+- `color="#RRGGBB"` → mapped to ASS primary color (unless overridden by `fontColor` in request)
+- `size="N"` → used as the base font size (overridden if `subtitle.fontSize` is provided)
+
+`color` 和 `size` 属性会被解析：
+- `color="#RRGGBB"` → 映射为 ASS 字幕主颜色（如果请求体中的 `fontColor` 不为空，则以请求为准）
+- `size="N"` → 作为基础字体大小（如果请求体中的 `subtitle.fontSize` 有值，则以请求为准）
+
+#### X/Y Coordinate Rules / X/Y 坐标规则
+
+1. **Coordinate System / 坐标系**
+   - `X` is the horizontal coordinate from the **left** edge, `Y` is the vertical coordinate from the **top** edge.
+   - 坐标原点在左上角：`X` 为水平方向（从左向右），`Y` 为垂直方向（从上向下）。
+   - The coordinates are interpreted in the internal ASS script resolution (`PlayResX`, `PlayResY`), not directly in final video pixels.
+   - 坐标是基于 ASS 脚本的内部分辨率（`PlayResX` / `PlayResY`）来理解的，而不是直接等同于最终视频像素。
+
+2. **Practical Range / 推荐范围**
+   - In practice, `PlayResX` / `PlayResY` are set by FFmpeg when converting SRT → ASS and are usually in a range like `384x288`, `640x360`, etc.
+   - 实际运行时，`PlayResX` / `PlayResY` 由 FFmpeg 在 SRT 转 ASS 时写入，通常是 `384x288`、`640x360` 等固定值。
+   - To ensure subtitles are visible on screen, keep X and Y within the rough range of the internal resolution:
+     - `0 ≤ X ≤ PlayResX`
+     - `0 ≤ Y ≤ PlayResY`
+   - 为确保字幕一定在画面内显示，建议让 X/Y 大致落在内部分辨率范围内：
+     - `0 ≤ X ≤ PlayResX`
+     - `0 ≤ Y ≤ PlayResY`
+
+3. **Why some large values are invisible? / 为什么某些较大的坐标看不到字幕？**
+   - If you set a very large Y (for example `Y:1180`) while `PlayResY` is only `360`, the subtitle will be placed **below** the visible canvas and will not be rendered.
+   - 如果 `PlayResY` 只有 `360`，但你写了 `Y:1180`，字幕在内部坐标系中已经落在“画布之外”，播放器会直接不渲染该行字幕。
+   - This explains why changing from small coordinates (`X:50 Y:30`) to very large ones (`X:360 Y:1180`) may cause some lines to disappear.
+   - 这也是为什么从小坐标（`X:50 Y:30`）换成很大的坐标（`X:360 Y:1180`）后，有些字幕会“看不见”的原因。
+
+4. **Recommended Usage / 推荐使用方式**
+   - For most cases, keep X/Y in a moderate range (for example X/Y within a few hundred units) instead of using very large numbers.
+   - 一般情况下建议 X/Y 使用较温和的数值（几百以内），不要用过大的数值。
+   - If you want the subtitle near the bottom, you can:
+     - Use `alignment = 2` (bottom-center) and a relatively small Y;
+     - Or test with several Y values until it visually fits your video.
+   - 如果希望字幕靠近底部：
+     - 可以设置 `alignment = 2`（底部居中），并配合较小的 Y；
+     - 或通过多次调整 Y 值来找到合适的位置。
+
+> Note: the current implementation does **not** automatically map X/Y to the final cropped video resolution.
+> Coordinates are applied directly in ASS space, so extreme values may fall outside the visible area.
+> 注意：当前实现**不会**自动根据最终裁剪后的视频分辨率去缩放 X/Y，坐标会直接用于 ASS 脚本空间，因此极端值可能落在可视区域之外。
+
 ### Example Request / 请求示例
 ```json
 {
