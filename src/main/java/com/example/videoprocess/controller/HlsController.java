@@ -20,15 +20,9 @@ public class HlsController {
     private final HlsService hlsService;
 
     @PostMapping("/process")
-    public Map<String, Object> processHls(@RequestBody HlsProcessRequest request) {
+    public HlsProcessResponse processHls(@RequestBody HlsProcessRequest request) {
         try {
-            HlsProcessResponse response = hlsService.processHls(request);
-            
-            Map<String, Object> result = new HashMap<>();
-            result.put("message", "HLS processing completed");
-            result.put("streams", response.getStreams());
-            
-            return result;
+            return hlsService.processHls(request);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("HLS processing failed: " + e.getMessage());

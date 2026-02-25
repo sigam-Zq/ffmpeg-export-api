@@ -55,7 +55,7 @@ public class HlsService {
         Path outputDir = Files.createTempDirectory("hls-output-");
 
         try {
-            // 2. Probe input video to determine resolution
+            // 2. Probe input video to determine resolution and duration
             FFmpegProbeResult probeResult = ffprobe.probe(formatPath(tempInput.toString()));
             FFmpegStream videoStream = probeResult.getStreams().stream()
                     .filter(s -> s.codec_type == FFmpegStream.CodecType.VIDEO)
@@ -64,29 +64,58 @@ public class HlsService {
 
             int width = videoStream.width;
             int height = videoStream.height;
-            log.info("Input resolution: {}x{}", width, height);
+            double duration = probeResult.getFormat().duration;
+            log.info("Input resolution: {}x{}, duration: {}s", width, height, duration);
 
             boolean hasAudio = probeResult.getStreams().stream()
                     .anyMatch(s -> s.codec_type == FFmpegStream.CodecType.AUDIO);
-            log.info("Input has audio: {}", hasAudio);
 
-            // 3. Determine quality levels based on input resolution
-            // Levels: 4K (2160p), 2K (1440p), 1080p, 720p, 480p, 360p
-            List<QualityLevel> levels = determineQualityLevels(width, height);
+            // 3. Determine quality levels
+            List<QualityLevel> levels;
+            if (request.getResolutions() != null && !request.getResolutions().isEmpty()) {
+                levels = new ArrayList<>();
+                for (HlsProcessRequest.ResolutionNode node : request.getResolutions()) {
+                    // Simple bitrate estimation if not provided: width * height * 0.15 (bits/pixel)
+                    // e.g. 1920x1080 * 0.15 = ~3Mbps
+                    long estimatedBitrate = (long)(node.getWidth() * node.getHeight() * 1.5); // bit/s? No, usually 0.1 bits per pixel is low quality, 2-3 is high.
+                    // Let's use a simpler mapping or the provided bitrate
+                    String bitrate = node.getBitrate();
+                    if (!StringUtils.hasText(bitrate)) {
+                        bitrate = calculateBitrate(node.getWidth(), node.getHeight());
+                    }
+                    // Estimate maxrate and bufsize
+                    String maxrate = bitrate.replace("k", "") + "000"; // simplistic
+                    try {
+                        long br = Long.parseLong(bitrate.replace("k", ""));
+                        maxrate = (br * 12 / 10) + "k"; // 1.2x
+                    } catch (Exception ignored) {}
+                    
+                    levels.add(new QualityLevel(node.getWidth(), node.getHeight(), bitrate, maxrate, bitrate));
+                }
+            } else {
+                levels = determineQualityLevels(width, height);
+            }
 
-            // 4. Construct FFmpeg command for multi-bitrate HLS
-            // We use raw ProcessBuilder because net.bramp.ffmpeg doesn't easily support complex filter_complex map logic for HLS variants
+            // Determine segment duration (hls_time)
+            String hlsTime = "6";
+            if (request.getSegmentCount() != null && request.getSegmentCount() > 0) {
+                // Calculate duration based on count
+                double segDuration = duration / request.getSegmentCount();
+                hlsTime = String.format("%.3f", segDuration);
+            } else if (request.getSegmentDuration() != null && request.getSegmentDuration() > 0) {
+                hlsTime = String.valueOf(request.getSegmentDuration());
+            }
+
+            // 4. Construct FFmpeg command
             List<String> cmd = new ArrayList<>();
             cmd.add(ffmpegPath);
             cmd.add("-y");
             cmd.add("-i");
             cmd.add(formatPath(tempInput.toString()));
             
-            // Build filter_complex and maps
             StringBuilder filterComplex = new StringBuilder();
             StringBuilder varStreamMap = new StringBuilder();
             
-            // Split input video stream into N streams and handle audio
             filterComplex.append("[0:v]split=").append(levels.size());
             for (int i = 0; i < levels.size(); i++) {
                 filterComplex.append("[v").append(i).append("]");
@@ -94,7 +123,6 @@ public class HlsService {
             filterComplex.append(";");
 
             if (hasAudio) {
-                // Split audio stream into N streams so each variant has its own independent audio packet stream
                 filterComplex.append("[0:a]asplit=").append(levels.size());
                 for (int i = 0; i < levels.size(); i++) {
                     filterComplex.append("[a").append(i).append("]");
@@ -102,7 +130,6 @@ public class HlsService {
                 filterComplex.append(";");
             }
 
-            // Scale each video stream
             for (int i = 0; i < levels.size(); i++) {
                 QualityLevel level = levels.get(i);
                 filterComplex.append("[v").append(i).append("]scale=w=").append(level.width()).append(":h=").append(level.height()).append("[v").append(i).append("out]");
@@ -114,11 +141,8 @@ public class HlsService {
             cmd.add("-filter_complex");
             cmd.add(filterComplex.toString());
 
-            // Map streams for each variant
             for (int i = 0; i < levels.size(); i++) {
                 QualityLevel level = levels.get(i);
-                
-                // Video map for this variant
                 cmd.add("-map");
                 cmd.add("[v" + i + "out]");
                 cmd.add("-c:v:" + i);
@@ -129,8 +153,6 @@ public class HlsService {
                 cmd.add(level.maxrate());
                 cmd.add("-bufsize:v:" + i);
                 cmd.add(level.bufsize());
-                
-                // Ensure consistent GOP and pixel format for HLS compatibility
                 cmd.add("-pix_fmt:v:" + i);
                 cmd.add("yuv420p");
                 cmd.add("-g:v:" + i);
@@ -140,7 +162,6 @@ public class HlsService {
                 cmd.add("-sc_threshold:v:" + i);
                 cmd.add("0");
 
-                // Audio map for this variant
                 if (hasAudio) {
                     cmd.add("-map");
                     cmd.add("[a" + i + "]");
@@ -159,28 +180,23 @@ public class HlsService {
                 }
             }
 
-            // HLS settings
             cmd.add("-var_stream_map");
             cmd.add(varStreamMap.toString());
             cmd.add("-hls_time");
-            cmd.add("6"); // Reduced from 10 to be more compatible with short videos
+            cmd.add(hlsTime);
             cmd.add("-hls_playlist_type");
             cmd.add("vod");
             cmd.add("-hls_flags");
             cmd.add("independent_segments");
             
-            // Master playlist name
             cmd.add("-master_pl_name");
-            cmd.add("index.m3u8");
+            cmd.add("master.m3u8");
             
-            // Segment filename pattern
-            // stream_%v/data%03d.ts
+            // Use v%v as temporary folder name
             cmd.add("-hls_segment_filename");
-            cmd.add(formatPath(outputDir.resolve("stream_%v_data%03d.ts").toString()));
+            cmd.add(formatPath(outputDir.resolve("v%v/segment%03d.ts").toString()));
             
-            // Variant playlist pattern
-            // stream_%v.m3u8
-            cmd.add(formatPath(outputDir.resolve("stream_%v.m3u8").toString()));
+            cmd.add(formatPath(outputDir.resolve("v%v/index.m3u8").toString()));
 
             log.info("Executing HLS command: {}", String.join(" ", cmd));
 
@@ -188,74 +204,79 @@ public class HlsService {
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
-            // Consume output (both stdout and stderr because of redirectErrorStream(true))
-            StringBuilder output = new StringBuilder();
+            StringBuilder processOutput = new StringBuilder();
             try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                    if (log.isDebugEnabled()) {
-                        log.debug(line);
-                    }
+                    processOutput.append(line).append("\n");
                 }
             }
 
             int exitCode = process.waitFor();
             if (exitCode != 0) {
-                log.error("FFmpeg HLS failed with exit code {}. Output:\n{}", exitCode, output);
-                throw new RuntimeException("FFmpeg HLS conversion failed with exit code " + exitCode + ". See logs for details.");
+                log.error("FFmpeg HLS failed with exit code {}. Output:\n{}", exitCode, processOutput);
+                throw new RuntimeException("FFmpeg HLS conversion failed with exit code " + exitCode);
             }
 
-            // 5. Upload all generated files to MinIO
-            // We need to upload: index.m3u8, stream_*.m3u8, stream_*_data*.ts
+            // 5. Upload files with structure
             String targetPath = request.getTargetPath();
-            if (targetPath.endsWith("/")) {
-                targetPath = targetPath.substring(0, targetPath.length() - 1);
-            }
+            if (targetPath.endsWith("/")) targetPath = targetPath.substring(0, targetPath.length() - 1);
+            final String finalTargetPath = targetPath;
             
-            // Ensure target path structure (e.g., "movies/movie1")
+            // Rewrite master.m3u8
+            Path masterPath = outputDir.resolve("master.m3u8");
+            String masterContent = Files.readString(masterPath);
             
             List<HlsProcessResponse.StreamInfo> streamInfos = new ArrayList<>();
             
-            // Walk the output directory
-            try (java.util.stream.Stream<Path> paths = Files.walk(outputDir)) {
-                String finalTargetPath = targetPath;
-                paths.filter(Files::isRegularFile).forEach(file -> {
-                    try {
-                        String filename = file.getFileName().toString();
-                        String objectName = finalTargetPath + "/" + filename;
-                        
-                        // Upload
-                        uploadFileToMinio(file, objectName);
-                        
-                        // If it's a variant playlist, add to response info
-                        if (filename.startsWith("stream_") && filename.endsWith(".m3u8")) {
-                            // Extract index from filename stream_0.m3u8
-                            int index = Integer.parseInt(filename.substring(7, filename.lastIndexOf('.')));
-                            if (index < levels.size()) {
-                                QualityLevel level = levels.get(index);
-                                String resolution = level.width + "x" + level.height;
-                                String url = getFullUrl(objectName);
-                                streamInfos.add(new HlsProcessResponse.StreamInfo(resolution, objectName, url));
+            for (int i = 0; i < levels.size(); i++) {
+                QualityLevel level = levels.get(i);
+                String resolution = level.width() + "x" + level.height();
+                String tempFolder = "v" + i;
+                String targetFolder = resolution;
+                
+                // If duplicates, append index
+                // (Simplified: assuming unique resolutions or okay to overwrite if same)
+                
+                // Replace in master playlist
+                // Regex to replace "v0/" with "1920x1080/"
+                masterContent = masterContent.replace(tempFolder + "/", targetFolder + "/");
+                
+                // Upload folder contents
+                Path levelDir = outputDir.resolve(tempFolder);
+                if (Files.exists(levelDir)) {
+                    try (java.util.stream.Stream<Path> files = Files.walk(levelDir)) {
+                        files.filter(Files::isRegularFile).forEach(file -> {
+                            try {
+                                String filename = file.getFileName().toString();
+                                String objectName = finalTargetPath + "/" + targetFolder + "/" + filename;
+                                uploadFileToMinio(file, objectName);
+                                
+                                if (filename.endsWith(".m3u8")) {
+                                    String url = getFullUrl(objectName);
+                                    streamInfos.add(new HlsProcessResponse.StreamInfo(resolution, objectName, url));
+                                }
+                            } catch (Exception e) {
+                                log.error("Upload failed", e);
                             }
-                        }
-                    } catch (Exception e) {
-                        log.error("Failed to upload file {}", file, e);
+                        });
                     }
-                });
+                }
             }
             
-            // Also add master playlist to response (optional, or just return the variants)
-            // The requirement says "return three different bitrate files index.m3u8 path and resolution"
-            // Usually the client plays the master index.m3u8.
-            // Let's add the master index as well if needed, but the structure asks for specific streams.
-            // We'll stick to the variants as requested, but also including the master might be useful.
+            // Upload rewritten master.m3u8
+            Path tempMaster = Files.createTempFile("master-rewritten", ".m3u8");
+            Files.writeString(tempMaster, masterContent);
+            String masterObjectName = finalTargetPath + "/master.m3u8";
+            uploadFileToMinio(tempMaster, masterObjectName);
+            Files.deleteIfExists(tempMaster);
             
-            // Let's strictly follow: "return three different bitrate files index.m3u8 path and corresponding resolution"
-            // Note: The master index.m3u8 doesn't have a single resolution, it links to others.
-            // The generated files are stream_0.m3u8, stream_1.m3u8 etc.
+            HlsProcessResponse response = new HlsProcessResponse();
+            response.setMasterM3u8Path(masterObjectName);
+            response.setMasterM3u8Url(getFullUrl(masterObjectName));
+            response.setStreams(streamInfos);
             
-            return new HlsProcessResponse(streamInfos);
+            return response;
 
         } finally {
             // Cleanup temp dir
@@ -267,6 +288,18 @@ public class HlsService {
             Files.deleteIfExists(tempInput);
         }
     }
+
+    private String calculateBitrate(int width, int height) {
+        // Simple approximation
+        long pixels = (long) width * height;
+        if (pixels >= 3840 * 2160) return "10000k";
+        if (pixels >= 2560 * 1440) return "6000k";
+        if (pixels >= 1920 * 1080) return "4000k";
+        if (pixels >= 1280 * 720) return "2000k";
+        if (pixels >= 854 * 480) return "1000k";
+        return "600k";
+    }
+
 
     private List<QualityLevel> determineQualityLevels(int width, int height) {
         List<QualityLevel> allLevels = new ArrayList<>();

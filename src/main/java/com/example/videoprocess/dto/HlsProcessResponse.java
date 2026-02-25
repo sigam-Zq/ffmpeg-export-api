@@ -11,6 +11,18 @@ import java.util.List;
 @AllArgsConstructor
 public class HlsProcessResponse {
     /**
+     * The path to the master.m3u8 file in MinIO.
+     * master.m3u8 文件的 MinIO 路径。
+     */
+    private String masterM3u8Path;
+
+    /**
+     * The full URL to the master.m3u8 file.
+     * master.m3u8 文件的完整访问 URL。
+     */
+    private String masterM3u8Url;
+
+    /**
      * List of generated HLS streams.
      * 生成的 HLS 流列表。
      */

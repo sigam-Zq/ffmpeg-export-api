@@ -139,8 +139,8 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
 ## 2. HLS Transcoding (Multi-bitrate) / HLS 多码率切片
 **Endpoint**: `/media/hls/process`
 **Method**: `POST`
-**Description**: Transcode a video into multi-bitrate HLS streams (m3u8/ts) based on its resolution and store them in MinIO.
-**描述**: 根据视频分辨率将其转码为多码率 HLS 流 (m3u8/ts) 并存储到 MinIO 中。
+**Description**: Transcode a video into multi-bitrate HLS streams (m3u8/ts) based on its resolution and store them in MinIO. Supports custom resolutions and segment duration.
+**描述**: 根据视频分辨率将其转码为多码率 HLS 流 (m3u8/ts) 并存储到 MinIO 中。支持自定义分辨率和切片时长。
 
 ### Request Body Parameters / 请求体参数
 
@@ -148,34 +148,53 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
 | :--- | :--- | :--- | :--- | :--- |
 | `objectName` | String | **Yes** | The name of the input video file stored in MinIO. | MinIO 中的输入视频文件名（相对路径）。 |
 | `targetPath` | String | **Yes** | The target directory path in MinIO to store the HLS files. | MinIO 中存储 HLS 文件的目标目录路径。 |
+| `resolutions` | List | No | List of custom resolutions. If not provided, defaults are used. | 自定义分辨率列表。如未提供，则使用默认值。 |
+| `segmentDuration` | Integer | No | Custom segment duration in seconds (hls_time). Default is 6s. | 自定义切片时长（秒）。默认为 6 秒。 |
+| `segmentCount` | Integer | No | Custom number of segments. Overrides `segmentDuration` if set. | 自定义切片个数。如果设置，将覆盖 `segmentDuration`。 |
+
+#### Resolution Object / 分辨率对象
+
+| Parameter (参数) | Type (类型) | Required (必填) | Description (English) | Description (中文) |
+| :--- | :--- | :--- | :--- | :--- |
+| `width` | Integer | **Yes** | The width of the video. | 视频宽度。 |
+| `height` | Integer | **Yes** | The height of the video. | 视频高度。 |
+| `bitrate` | String | No | The bitrate (e.g., "2000k"). If not provided, estimated from resolution. | 码率（如 "2000k"）。如未提供，则根据分辨率估算。 |
 
 ### Example Request / 请求示例
 ```json
 {
   "objectName": "movies/avatar.mp4",
-  "targetPath": "hls/avatar_stream"
+  "targetPath": "hls/avatar_stream",
+  "segmentDuration": 4,
+  "resolutions": [
+    {
+      "width": 1920,
+      "height": 1080,
+      "bitrate": "4000k"
+    },
+    {
+      "width": 1280,
+      "height": 720
+    }
+  ]
 }
 ```
 
 ### Response / 响应
 ```json
 {
-  "message": "HLS processing completed",
+  "masterM3u8Path": "hls/avatar_stream/master.m3u8",
+  "masterM3u8Url": "http://minio-server:9000/bucket/hls/avatar_stream/master.m3u8",
   "streams": [
     {
       "resolution": "1920x1080",
-      "m3u8Path": "hls/avatar_stream/stream_0.m3u8",
-      "url": "http://minio-server:9000/bucket/hls/avatar_stream/stream_0.m3u8"
+      "m3u8Path": "hls/avatar_stream/1920x1080/index.m3u8",
+      "url": "http://minio-server:9000/bucket/hls/avatar_stream/1920x1080/index.m3u8"
     },
     {
       "resolution": "1280x720",
-      "m3u8Path": "hls/avatar_stream/stream_1.m3u8",
-      "url": "http://minio-server:9000/bucket/hls/avatar_stream/stream_1.m3u8"
-    },
-    {
-      "resolution": "854x480",
-      "m3u8Path": "hls/avatar_stream/stream_2.m3u8",
-      "url": "http://minio-server:9000/bucket/hls/avatar_stream/stream_2.m3u8"
+      "m3u8Path": "hls/avatar_stream/1280x720/index.m3u8",
+      "url": "http://minio-server:9000/bucket/hls/avatar_stream/1280x720/index.m3u8"
     }
   ]
 }
