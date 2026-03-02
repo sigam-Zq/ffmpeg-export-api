@@ -116,27 +116,29 @@ public class HlsService {
             StringBuilder filterComplex = new StringBuilder();
             StringBuilder varStreamMap = new StringBuilder();
             
-            filterComplex.append("[0:v]split=").append(levels.size());
+            List<String> filterParts = new ArrayList<>();
+            StringBuilder vSplit = new StringBuilder();
+            vSplit.append("[0:v]split=").append(levels.size());
             for (int i = 0; i < levels.size(); i++) {
-                filterComplex.append("[v").append(i).append("]");
+                vSplit.append("[v").append(i).append("]");
             }
-            filterComplex.append(";");
+            filterParts.add(vSplit.toString());
 
             if (hasAudio) {
-                filterComplex.append("[0:a]asplit=").append(levels.size());
+                StringBuilder aSplit = new StringBuilder();
+                aSplit.append("[0:a]asplit=").append(levels.size());
                 for (int i = 0; i < levels.size(); i++) {
-                    filterComplex.append("[a").append(i).append("]");
+                    aSplit.append("[a").append(i).append("]");
                 }
-                filterComplex.append(";");
+                filterParts.add(aSplit.toString());
             }
 
             for (int i = 0; i < levels.size(); i++) {
                 QualityLevel level = levels.get(i);
-                filterComplex.append("[v").append(i).append("]scale=w=").append(level.width()).append(":h=").append(level.height()).append("[v").append(i).append("out]");
-                if (i < levels.size() - 1 || hasAudio) {
-                    filterComplex.append(";");
-                }
+                filterParts.add("[v" + i + "]scale=w=" + level.width() + ":h=" + level.height() + "[v" + i + "out]");
             }
+
+            filterComplex.append(String.join(";", filterParts));
             
             cmd.add("-filter_complex");
             cmd.add(filterComplex.toString());
@@ -332,11 +334,20 @@ public class HlsService {
     private record QualityLevel(int width, int height, String bitrate, String maxrate, String bufsize) {}
 
     private Path downloadFile(String objectName) throws Exception {
+        String key = objectName == null ? "" : objectName.trim();
+        if (key.startsWith("/")) {
+            key = key.substring(1);
+        }
+        key = key.replace("\\", "/");
+        while (key.contains("//")) {
+            key = key.replace("//", "/");
+        }
+        log.info("Downloading from MinIO bucket='{}', object='{}'", minioConfig.getBucketName(), key);
         Path tempFile = Files.createTempFile("input-", ".tmp");
         try (InputStream stream = minioClient.getObject(
                 GetObjectArgs.builder()
                         .bucket(minioConfig.getBucketName())
-                        .object(objectName)
+                        .object(key)
                         .build())) {
             Files.copy(stream, tempFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }

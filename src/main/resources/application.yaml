@@ -10,7 +10,7 @@ spring:
       max-request-size: 500MB
 
 minio:
-  endpoint: http://yzt.local:9000
+  endpoint: http://192.168.3.143:9000
   # The external URL for accessing MinIO (e.g. from browser or frontend)
   # 外部访问 MinIO 的地址（例如从浏览器或前端访问）
   # If empty, it will default to 'endpoint'
@@ -20,5 +20,7 @@ minio:
   bucket-name: yzt
 
 ffmpeg:
-  path: D:/desktop/tools/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe
-  ffprobe-path: D:/desktop/tools/ffmpeg-master-latest-win64-gpl-shared/bin/ffprobe.exe
+  # path: D:/desktop/tools/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe
+  # ffprobe-path: D:/desktop/tools/ffmpeg-master-latest-win64-gpl-shared/bin/ffprobe.exe
+  path: ffmpeg
+  ffprobe-path: ffprobe
