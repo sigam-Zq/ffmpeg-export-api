@@ -8,15 +8,12 @@ import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import net.bramp.ffmpeg.FFmpeg;
 import net.bramp.ffmpeg.FFprobe;
 import net.bramp.ffmpeg.probe.FFmpegProbeResult;
 import net.bramp.ffmpeg.probe.FFmpegStream;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
-
-import jakarta.annotation.PostConstruct;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -25,7 +22,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 @Slf4j
 @Service
@@ -34,7 +30,6 @@ public class HlsService {
 
     private final MinioClient minioClient;
     private final MinioConfig minioConfig;
-    private final FFmpeg ffmpeg;
     private final FFprobe ffprobe;
 
     @Value("${ffmpeg.path:ffmpeg}")
@@ -55,7 +50,7 @@ public class HlsService {
         Path outputDir = Files.createTempDirectory("hls-output-");
 
         try {
-            // 2. Probe input video to determine resolution and duration
+            // 2. Probe input video to determine resolution, fps and duration
             FFmpegProbeResult probeResult = ffprobe.probe(formatPath(tempInput.toString()));
             FFmpegStream videoStream = probeResult.getStreams().stream()
                     .filter(s -> s.codec_type == FFmpegStream.CodecType.VIDEO)
@@ -65,7 +60,15 @@ public class HlsService {
             int width = videoStream.width;
             int height = videoStream.height;
             double duration = probeResult.getFormat().duration;
-            log.info("Input resolution: {}x{}, duration: {}s", width, height, duration);
+
+            // Calculate real fps from avg_frame_rate (e.g. 30000/1001 ≈ 29.97)
+            double fps = 25.0; // safe default
+            if (videoStream.avg_frame_rate != null && videoStream.avg_frame_rate.getDenominator() > 0) {
+                fps = (double) videoStream.avg_frame_rate.getNumerator()
+                        / videoStream.avg_frame_rate.getDenominator();
+            }
+            log.info("Input resolution: {}x{}, fps: {}, duration: {}s", width, height,
+                    String.format("%.3f", fps), duration);
 
             boolean hasAudio = probeResult.getStreams().stream()
                     .anyMatch(s -> s.codec_type == FFmpegStream.CodecType.AUDIO);
@@ -75,36 +78,44 @@ public class HlsService {
             if (request.getResolutions() != null && !request.getResolutions().isEmpty()) {
                 levels = new ArrayList<>();
                 for (HlsProcessRequest.ResolutionNode node : request.getResolutions()) {
-                    // Simple bitrate estimation if not provided: width * height * 0.15 (bits/pixel)
-                    // e.g. 1920x1080 * 0.15 = ~3Mbps
-                    long estimatedBitrate = (long)(node.getWidth() * node.getHeight() * 1.5); // bit/s? No, usually 0.1 bits per pixel is low quality, 2-3 is high.
-                    // Let's use a simpler mapping or the provided bitrate
-                    String bitrate = node.getBitrate();
-                    if (!StringUtils.hasText(bitrate)) {
-                        bitrate = calculateBitrate(node.getWidth(), node.getHeight());
-                    }
-                    // Estimate maxrate and bufsize
-                    String maxrate = bitrate.replace("k", "") + "000"; // simplistic
-                    try {
-                        long br = Long.parseLong(bitrate.replace("k", ""));
-                        maxrate = (br * 12 / 10) + "k"; // 1.2x
-                    } catch (Exception ignored) {}
-                    
-                    levels.add(new QualityLevel(node.getWidth(), node.getHeight(), bitrate, maxrate, bitrate));
+                    String bitrate = StringUtils.hasText(node.getBitrate())
+                            ? node.getBitrate()
+                            : calculateBitrate(node.getWidth(), node.getHeight());
+                    String maxrate = StringUtils.hasText(node.getMaxrate())
+                            ? node.getMaxrate()
+                            : deriveMaxrate(bitrate);
+                    String bufsize = StringUtils.hasText(node.getBufsize())
+                            ? node.getBufsize()
+                            : deriveBufsize(bitrate);
+                    levels.add(new QualityLevel(node.getWidth(), node.getHeight(), bitrate, maxrate, bufsize));
                 }
             } else {
                 levels = determineQualityLevels(width, height);
             }
 
             // Determine segment duration (hls_time)
-            String hlsTime = "6";
+            // For best compatibility, segment duration should align to GOP size (= fps * hlsTimeSeconds)
+            int hlsTimeSeconds = 6; // default
             if (request.getSegmentCount() != null && request.getSegmentCount() > 0) {
-                // Calculate duration based on count
-                double segDuration = duration / request.getSegmentCount();
-                hlsTime = String.format("%.3f", segDuration);
+                // Round to nearest integer so GOP boundaries align
+                hlsTimeSeconds = (int) Math.max(1, Math.round(duration / request.getSegmentCount()));
             } else if (request.getSegmentDuration() != null && request.getSegmentDuration() > 0) {
-                hlsTime = String.valueOf(request.getSegmentDuration());
+                hlsTimeSeconds = request.getSegmentDuration();
             }
+            String hlsTime = String.valueOf(hlsTimeSeconds);
+
+            // GOP size = fps * segment_duration (integer).
+            // keyint_min = GOP size ensures every segment starts with a keyframe.
+            // sc_threshold=0 disables scene-cut keyframes that would break alignment.
+            int gopSize = (int) Math.round(fps * hlsTimeSeconds);
+            if (gopSize < 1) gopSize = 1;
+            log.info("HLS segment={}s, fps={}, GOP={}", hlsTimeSeconds, String.format("%.3f", fps), gopSize);
+
+            // Encoding preset (speed/quality trade-off for libx264)
+            String preset = StringUtils.hasText(request.getPreset()) ? request.getPreset() : "fast";
+
+            // Audio bitrate
+            int audioBitrate = request.getAudioBitrate() != null ? request.getAudioBitrate() : 128;
 
             // 4. Construct FFmpeg command
             List<String> cmd = new ArrayList<>();
@@ -112,43 +123,50 @@ public class HlsService {
             cmd.add("-y");
             cmd.add("-i");
             cmd.add(formatPath(tempInput.toString()));
-            
-            StringBuilder filterComplex = new StringBuilder();
-            StringBuilder varStreamMap = new StringBuilder();
-            
+
+            // filter_complex: split video (and audio) into N streams, scale each
             List<String> filterParts = new ArrayList<>();
+
             StringBuilder vSplit = new StringBuilder();
             vSplit.append("[0:v]split=").append(levels.size());
             for (int i = 0; i < levels.size(); i++) {
-                vSplit.append("[v").append(i).append("]");
+                vSplit.append("[vin").append(i).append("]");
             }
             filterParts.add(vSplit.toString());
 
-            if (hasAudio) {
+            if (hasAudio && levels.size() > 1) {
                 StringBuilder aSplit = new StringBuilder();
                 aSplit.append("[0:a]asplit=").append(levels.size());
                 for (int i = 0; i < levels.size(); i++) {
-                    aSplit.append("[a").append(i).append("]");
+                    aSplit.append("[ain").append(i).append("]");
                 }
                 filterParts.add(aSplit.toString());
             }
 
             for (int i = 0; i < levels.size(); i++) {
                 QualityLevel level = levels.get(i);
-                filterParts.add("[v" + i + "]scale=w=" + level.width() + ":h=" + level.height() + "[v" + i + "out]");
+                // force_original_aspect_ratio=decrease: fit within the box without upscaling
+                // scale=-2:720 keeps aspect ratio with height=720, width aligned to mod 2
+                // Using lanczos for high-quality downscale
+                String scaleFilter = String.format(
+                        "[vin%d]scale=w=%d:h=%d:force_original_aspect_ratio=decrease:flags=lanczos,pad=%d:%d:(ow-iw)/2:(oh-ih)/2[vout%d]",
+                        i, level.width(), level.height(), level.width(), level.height(), i);
+                filterParts.add(scaleFilter);
             }
 
-            filterComplex.append(String.join(";", filterParts));
-            
             cmd.add("-filter_complex");
-            cmd.add(filterComplex.toString());
+            cmd.add(String.join(";", filterParts));
 
+            StringBuilder varStreamMap = new StringBuilder();
             for (int i = 0; i < levels.size(); i++) {
                 QualityLevel level = levels.get(i);
+
                 cmd.add("-map");
-                cmd.add("[v" + i + "out]");
+                cmd.add("[vout" + i + "]");
                 cmd.add("-c:v:" + i);
                 cmd.add("libx264");
+                cmd.add("-preset:v:" + i);
+                cmd.add(preset);
                 cmd.add("-b:v:" + i);
                 cmd.add(level.bitrate());
                 cmd.add("-maxrate:v:" + i);
@@ -157,24 +175,32 @@ public class HlsService {
                 cmd.add(level.bufsize());
                 cmd.add("-pix_fmt:v:" + i);
                 cmd.add("yuv420p");
+                // GOP aligned to segment duration for clean HLS cuts
                 cmd.add("-g:v:" + i);
-                cmd.add("60");
+                cmd.add(String.valueOf(gopSize));
                 cmd.add("-keyint_min:v:" + i);
-                cmd.add("60");
+                cmd.add(String.valueOf(gopSize));
                 cmd.add("-sc_threshold:v:" + i);
                 cmd.add("0");
+                // H.264 main profile, level 4.0 – broad device compatibility
+                cmd.add("-profile:v:" + i);
+                cmd.add("main");
 
                 if (hasAudio) {
+                    String audioMap = (levels.size() > 1) ? "[ain" + i + "]" : "0:a";
                     cmd.add("-map");
-                    cmd.add("[a" + i + "]");
+                    cmd.add(audioMap);
                     cmd.add("-c:a:" + i);
                     cmd.add("aac");
                     cmd.add("-b:a:" + i);
-                    cmd.add("128k");
-                    cmd.add("-ac");
+                    cmd.add(audioBitrate + "k");
+                    cmd.add("-ac:a:" + i);
                     cmd.add("2");
+                    // AAC-LC for maximum compatibility
+                    cmd.add("-profile:a:" + i);
+                    cmd.add("aac_low");
                 }
-                
+
                 if (i > 0) varStreamMap.append(" ");
                 varStreamMap.append("v:").append(i);
                 if (hasAudio) {
@@ -190,14 +216,14 @@ public class HlsService {
             cmd.add("vod");
             cmd.add("-hls_flags");
             cmd.add("independent_segments");
-            
+
             cmd.add("-master_pl_name");
             cmd.add("master.m3u8");
-            
+
             // Use v%v as temporary folder name
             cmd.add("-hls_segment_filename");
             cmd.add(formatPath(outputDir.resolve("v%v/segment%03d.ts").toString()));
-            
+
             cmd.add(formatPath(outputDir.resolve("v%v/index.m3u8").toString()));
 
             log.info("Executing HLS command: {}", String.join(" ", cmd));
@@ -291,43 +317,64 @@ public class HlsService {
         }
     }
 
+    /**
+     * Calculate a recommended target bitrate based on resolution.
+     * These values are tuned for libx264 with "fast" preset at standard quality.
+     */
     private String calculateBitrate(int width, int height) {
-        // Simple approximation
         long pixels = (long) width * height;
-        if (pixels >= 3840 * 2160) return "10000k";
-        if (pixels >= 2560 * 1440) return "6000k";
-        if (pixels >= 1920 * 1080) return "4000k";
-        if (pixels >= 1280 * 720) return "2000k";
-        if (pixels >= 854 * 480) return "1000k";
-        return "600k";
+        if (pixels >= 3840L * 2160) return "10000k"; // 4K
+        if (pixels >= 2560L * 1440) return "6000k";  // 2K
+        if (pixels >= 1920L * 1080) return "4000k";  // 1080p
+        if (pixels >= 1280L * 720)  return "2000k";  // 720p
+        if (pixels >= 854L  * 480)  return "1000k";  // 480p
+        return "600k";                                 // 360p and below
+    }
+
+    /** maxrate = 1.2× bitrate (allows burst above average). */
+    private String deriveMaxrate(String bitrate) {
+        try {
+            long kbps = Long.parseLong(bitrate.replace("k", "").trim());
+            return (kbps * 12 / 10) + "k";
+        } catch (Exception e) {
+            return bitrate;
+        }
+    }
+
+    /** bufsize = 2× bitrate (VBV buffer for ~2 seconds of video). */
+    private String deriveBufsize(String bitrate) {
+        try {
+            long kbps = Long.parseLong(bitrate.replace("k", "").trim());
+            return (kbps * 2) + "k";
+        } catch (Exception e) {
+            return bitrate;
+        }
     }
 
 
     private List<QualityLevel> determineQualityLevels(int width, int height) {
+        // Standard quality ladder – each level uses correct maxrate/bufsize
         List<QualityLevel> allLevels = new ArrayList<>();
-        // Define standard levels
         allLevels.add(new QualityLevel(3840, 2160, "10000k", "12000k", "20000k")); // 4K
-        allLevels.add(new QualityLevel(2560, 1440, "6000k", "8000k", "12000k"));   // 2K
-        allLevels.add(new QualityLevel(1920, 1080, "4000k", "5000k", "8000k"));    // 1080p
-        allLevels.add(new QualityLevel(1280, 720,  "2000k", "2500k", "4000k"));    // 720p
-        allLevels.add(new QualityLevel(854, 480,   "1000k", "1200k", "2000k"));    // 480p
-        allLevels.add(new QualityLevel(640, 360,   "600k",  "800k",  "1200k"));    // 360p
+        allLevels.add(new QualityLevel(2560, 1440, "6000k",  "7200k",  "12000k")); // 2K
+        allLevels.add(new QualityLevel(1920, 1080, "4000k",  "4800k",  "8000k"));  // 1080p
+        allLevels.add(new QualityLevel(1280, 720,  "2000k",  "2400k",  "4000k"));  // 720p
+        allLevels.add(new QualityLevel(854,  480,  "1000k",  "1200k",  "2000k"));  // 480p
+        allLevels.add(new QualityLevel(640,  360,  "600k",   "720k",   "1200k"));  // 360p
 
-        // Filter levels that are <= input resolution
-        List<QualityLevel> validLevels = new ArrayList<>();
-        for (QualityLevel level : allLevels) {
-            if (level.width <= width && level.height <= height) {
-                validLevels.add(level);
-            }
-        }
-        
-        // If input is smaller than 360p, just add original
+        // Keep only levels whose width AND height do not exceed the source
+        List<QualityLevel> validLevels = allLevels.stream()
+                .filter(l -> l.width() <= width && l.height() <= height)
+                .toList();
+
+        // If input is smaller than 360p, generate a single level at source resolution
         if (validLevels.isEmpty()) {
-            validLevels.add(new QualityLevel(width, height, "500k", "600k", "1000k"));
+            String bitrate = calculateBitrate(width, height);
+            validLevels = List.of(new QualityLevel(width, height, bitrate,
+                    deriveMaxrate(bitrate), deriveBufsize(bitrate)));
         }
-        
-        // Requirement says "require three bitrates".
-        // We take top 3 valid levels.
+
+        // Return at most 3 quality levels (top quality first)
         return validLevels.stream().limit(3).toList();
     }
 

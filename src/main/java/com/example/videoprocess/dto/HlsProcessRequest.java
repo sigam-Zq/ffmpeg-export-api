@@ -25,7 +25,7 @@ public class HlsProcessRequest {
     private List<ResolutionNode> resolutions;
 
     /**
-     * Custom segment duration in seconds (hls_time).
+     * Custom segment duration in seconds (hls_time). Default: 6.
      * 自定义切片时长（秒）。
      */
     private Integer segmentDuration;
@@ -36,11 +36,28 @@ public class HlsProcessRequest {
      */
     private Integer segmentCount;
 
+    /**
+     * libx264 encoding speed preset: ultrafast/superfast/veryfast/faster/fast/medium/slow/slower/veryslow.
+     * Default: "fast" for HLS to balance speed and compression.
+     * libx264 编码速度预设，默认 "fast"。
+     */
+    private String preset;
+
+    /**
+     * Audio bitrate per stream in kbps. Default: 128.
+     * 每路音频码率（kbps），默认 128。
+     */
+    private Integer audioBitrate;
+
     @Data
     public static class ResolutionNode {
         private Integer width;
         private Integer height;
-        // Optional: bitrate control
+        /** Target video bitrate, e.g. "2000k". If omitted, auto-calculated. */
         private String bitrate;
+        /** Max bitrate, e.g. "2400k". Defaults to 1.2× bitrate. */
+        private String maxrate;
+        /** VBV buffer size, e.g. "4000k". Defaults to 2× bitrate. */
+        private String bufsize;
     }
 }

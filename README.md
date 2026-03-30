@@ -12,8 +12,8 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 ## 1. Video Processing / 视频处理
 **Endpoint**: `/media/video/process`
 **Method**: `POST`
-**Description**: Process video files including clipping, cropping, transcoding, bitrate adjustment, and adding subtitles with styling options.
-**描述**: 处理视频文件，支持视频剪辑、画面裁剪、格式转码、码率调整以及添加带有样式选项的字幕。
+**Description**: Process video files including clipping, cropping, transcoding, scaling, bitrate/quality adjustment, and adding subtitles with styling options.
+**描述**: 处理视频文件，支持视频剪辑、画面裁剪、缩放、格式转码、码率/质量调整以及添加带有样式选项的字幕。
 
 ### Request Body Parameters / 请求体参数
 
@@ -27,8 +27,22 @@ All endpoints are relative to the base URL of the application (e.g., `http://loc
 | `cropY` | Integer | No | The Y-coordinate of the top-left corner for cropping. Defaults to 0 if cropWidth/Height are set. | 裁剪区域左上角的 Y 坐标。默认为 0。 |
 | `cropWidth` | Integer | No | The width of the crop area. Both `cropWidth` and `cropHeight` must be set to enable cropping. | 裁剪区域的宽度。必须同时设置高度才生效。 |
 | `cropHeight` | Integer | No | The height of the crop area. Both `cropWidth` and `cropHeight` must be set to enable cropping. | 裁剪区域的高度。必须同时设置宽度才生效。 |
-| `bitrate` | Long | No | The video bitrate in kbps (e.g., 2000 for 2Mbps). | 视频比特率，单位 kbps（例如 2000 代表 2Mbps）。 |
+| `scaleWidth` | Integer | No | Output scale width in pixels. Use `-2` to auto-calculate based on aspect ratio (requires `scaleHeight`). | 输出缩放宽度（像素）。设为 `-2` 可按比例自适应（需同时指定 `scaleHeight`）。 |
+| `scaleHeight` | Integer | No | Output scale height in pixels. Use `-2` to auto-calculate based on aspect ratio (requires `scaleWidth`). | 输出缩放高度（像素）。设为 `-2` 可按比例自适应（需同时指定 `scaleWidth`）。 |
+| `videoCodec` | String | No | Video encoder. Defaults to `"libx264"`. Use `"libx265"` for better compression, or `"copy"` to skip re-encoding. | 视频编码器。默认 `"libx264"`。`"libx265"` 压缩率更高，`"copy"` 跳过重编码（仅做容器转换/剪辑）。 |
+| `crf` | Integer | No | Constant Rate Factor for quality-based encoding (0–51, lower = better quality). Recommended: `18`–`28` for libx264. **Overrides `bitrate` when set.** | 恒质量系数（0–51，值越小质量越高）。推荐范围 18–28。**设置后将忽略 `bitrate`。** |
+| `bitrate` | Long | No | Target video bitrate in kbps (e.g., `2000` for 2 Mbps). Ignored if `crf` is set. | 目标视频码率（kbps，例如 `2000` 表示 2 Mbps）。设置 `crf` 时此参数无效。 |
+| `preset` | String | No | libx264/libx265 encoding speed preset. Options: `ultrafast` / `superfast` / `veryfast` / `faster` / `fast` / `medium`(default) / `slow` / `slower` / `veryslow`. Slower = better compression at same quality. | 编码速度预设。越慢压缩率越高（文件越小），CPU 消耗越大。默认 `medium`。 |
+| `profile` | String | No | H.264 profile: `"baseline"` / `"main"` / `"high"`. Use `"baseline"` for maximum device compatibility. | H.264 Profile。`"baseline"` 兼容性最好（无 B 帧），`"high"` 压缩效率最高。 |
+| `level` | String | No | H.264 level, e.g. `"4.0"`, `"4.1"`, `"5.0"`. Controls max bitrate and resolution constraints. | H.264 Level，如 `"4.0"`，控制最大码率和分辨率上限。 |
+| `audioCodec` | String | No | Audio encoder. Defaults to `"aac"`. Use `"mp3"` for MP3 output, or `"copy"` to pass through original audio. | 音频编码器。默认 `"aac"`，可选 `"mp3"` 或 `"copy"`（直接复制原始音轨）。 |
+| `audioBitrate` | Integer | No | Audio bitrate in kbps. Defaults to `128`. Common values: `96`, `128`, `192`, `256`. | 音频码率（kbps）。默认 `128`。 |
 | `subtitle` | Object | No | Subtitle configuration object. | 字幕配置对象。 |
+
+> **Encoding mode tips / 编码模式建议：**
+> - **Quality priority (质量优先)**: Set `crf` (e.g., `23`) + `preset` (e.g., `slow`). No fixed bitrate.
+> - **Bitrate priority (码率优先)**: Set `bitrate` (e.g., `2000`) without `crf`. Service auto-adds VBV (`maxrate`/`bufsize`).
+> - **Fast copy (快速复制)**: Set `videoCodec: "copy"` and `audioCodec: "copy"` to skip re-encoding entirely.
 
 ### Subtitle Options (`subtitle`) / 字幕选项
 
@@ -103,6 +117,8 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
    - 可以直接把 X/Y 理解为“应用裁剪后的最终视频像素坐标”，不需要关心 ASS 的 PlayRes 细节。
 
 ### Example Request / 请求示例
+
+**Quality-based encoding (CRF mode) / 质量优先模式：**
 ```json
 {
   "objectName": "my_vacation.mp4",
@@ -113,7 +129,12 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
   "cropY": 100,
   "cropWidth": 1280,
   "cropHeight": 720,
-  "bitrate": 2000,
+  "crf": 23,
+  "preset": "slow",
+  "profile": "high",
+  "level": "4.1",
+  "audioCodec": "aac",
+  "audioBitrate": 128,
   "subtitle": {
     "objectName": "captions.srt",
     "fontSize": 24,
@@ -122,6 +143,32 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
     "marginL": 10,
     "alignment": 2
   }
+}
+```
+
+**Bitrate-based encoding / 码率优先模式：**
+```json
+{
+  "objectName": "my_vacation.mp4",
+  "outputFormat": "mp4",
+  "scaleWidth": 1280,
+  "scaleHeight": -2,
+  "bitrate": 2000,
+  "preset": "fast",
+  "audioCodec": "aac",
+  "audioBitrate": 128
+}
+```
+
+**Fast cut without re-encoding / 快速剪辑（不重编码）：**
+```json
+{
+  "objectName": "long_video.mp4",
+  "outputFormat": "mp4",
+  "startTime": 30.0,
+  "duration": 120.0,
+  "videoCodec": "copy",
+  "audioCodec": "copy"
 }
 ```
 
@@ -139,8 +186,8 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
 ## 2. HLS Transcoding (Multi-bitrate) / HLS 多码率切片
 **Endpoint**: `/media/hls/process`
 **Method**: `POST`
-**Description**: Transcode a video into multi-bitrate HLS streams (m3u8/ts) based on its resolution and store them in MinIO. Supports custom resolutions and segment duration.
-**描述**: 根据视频分辨率将其转码为多码率 HLS 流 (m3u8/ts) 并存储到 MinIO 中。支持自定义分辨率和切片时长。
+**Description**: Transcode a video into multi-bitrate HLS streams (m3u8/ts) based on its resolution and store them in MinIO. Supports custom resolutions, segment duration, encoding preset and audio bitrate.
+**描述**: 根据视频分辨率将其转码为多码率 HLS 流 (m3u8/ts) 并存储到 MinIO 中。支持自定义分辨率、切片时长、编码预设及音频码率。
 
 ### Request Body Parameters / 请求体参数
 
@@ -148,33 +195,69 @@ HTML-like `<font>` tags in the text are supported and will be converted to ASS s
 | :--- | :--- | :--- | :--- | :--- |
 | `objectName` | String | **Yes** | The name of the input video file stored in MinIO. | MinIO 中的输入视频文件名（相对路径）。 |
 | `targetPath` | String | **Yes** | The target directory path in MinIO to store the HLS files. | MinIO 中存储 HLS 文件的目标目录路径。 |
-| `resolutions` | List | No | List of custom resolutions. If not provided, defaults are used. | 自定义分辨率列表。如未提供，则使用默认值。 |
-| `segmentDuration` | Integer | No | Custom segment duration in seconds (hls_time). Default is 6s. | 自定义切片时长（秒）。默认为 6 秒。 |
-| `segmentCount` | Integer | No | Custom number of segments. Overrides `segmentDuration` if set. | 自定义切片个数。如果设置，将覆盖 `segmentDuration`。 |
+| `resolutions` | List | No | List of custom resolutions. If not provided, auto quality ladder is applied (top 3 levels ≤ source resolution). | 自定义分辨率列表。如未提供，则自动选取不超过源分辨率的前 3 档质量等级。 |
+| `segmentDuration` | Integer | No | Custom segment duration in seconds (`hls_time`). Default is `6`. | 自定义切片时长（秒）。默认 6 秒。 |
+| `segmentCount` | Integer | No | Total number of segments. Overrides `segmentDuration` when set. Segment duration = `round(totalDuration / segmentCount)`. | 总切片数量。设置后覆盖 `segmentDuration`，切片时长 = `round(总时长 / 切片数)`。 |
+| `preset` | String | No | libx264 encoding speed preset: `ultrafast` / `veryfast` / `fast`(default) / `medium` / `slow` / `veryslow`. | libx264 编码速度预设，默认 `fast`（兼顾 HLS 转码速度与压缩率）。 |
+| `audioBitrate` | Integer | No | Audio bitrate per stream in kbps. Defaults to `128`. | 每路音频码率（kbps）。默认 128。 |
 
 #### Resolution Object / 分辨率对象
 
 | Parameter (参数) | Type (类型) | Required (必填) | Description (English) | Description (中文) |
 | :--- | :--- | :--- | :--- | :--- |
-| `width` | Integer | **Yes** | The width of the video. | 视频宽度。 |
-| `height` | Integer | **Yes** | The height of the video. | 视频高度。 |
-| `bitrate` | String | No | The bitrate (e.g., "2000k"). If not provided, estimated from resolution. | 码率（如 "2000k"）。如未提供，则根据分辨率估算。 |
+| `width` | Integer | **Yes** | The width of the video stream. | 视频流的宽度（像素）。 |
+| `height` | Integer | **Yes** | The height of the video stream. | 视频流的高度（像素）。 |
+| `bitrate` | String | No | Target video bitrate (e.g., `"2000k"`). Auto-calculated from resolution if omitted. | 目标视频码率（如 `"2000k"`）。省略时根据分辨率自动估算。 |
+| `maxrate` | String | No | Max bitrate cap for VBV (e.g., `"2400k"`). Defaults to `1.2 × bitrate`. | VBV 最大码率（如 `"2400k"`）。默认为 `1.2 × bitrate`。 |
+| `bufsize` | String | No | VBV buffer size (e.g., `"4000k"`). Defaults to `2 × bitrate`. Larger bufsize allows more burst. | VBV 缓冲区大小（如 `"4000k"`）。默认为 `2 × bitrate`，越大允许的瞬时码率越高。 |
+
+> **Auto quality ladder / 默认质量等级表（`resolutions` 未设置时）：**
+>
+> | Level | Width × Height | Bitrate | Maxrate | Bufsize |
+> |---|---|---|---|---|
+> | 4K   | 3840×2160 | 10000k | 12000k | 20000k |
+> | 2K   | 2560×1440 | 6000k  | 7200k  | 12000k |
+> | 1080p| 1920×1080 | 4000k  | 4800k  | 8000k  |
+> | 720p | 1280×720  | 2000k  | 2400k  | 4000k  |
+> | 480p | 854×480   | 1000k  | 1200k  | 2000k  |
+> | 360p | 640×360   | 600k   | 720k   | 1200k  |
+>
+> Only levels whose width **and** height are ≤ the source resolution are included. At most 3 levels are used.  
+> 仅保留宽高均不超过源视频的等级，最多取前 3 档。
 
 ### Example Request / 请求示例
+
+**Auto quality ladder with encoding control / 自动质量等级 + 编码控制：**
+```json
+{
+  "objectName": "movies/avatar.mp4",
+  "targetPath": "hls/avatar_stream",
+  "segmentDuration": 6,
+  "preset": "fast",
+  "audioBitrate": 128
+}
+```
+
+**Custom resolutions with full VBV control / 自定义分辨率 + 精细码率控制：**
 ```json
 {
   "objectName": "movies/avatar.mp4",
   "targetPath": "hls/avatar_stream",
   "segmentDuration": 4,
+  "preset": "medium",
+  "audioBitrate": 192,
   "resolutions": [
     {
       "width": 1920,
       "height": 1080,
-      "bitrate": "4000k"
+      "bitrate": "4000k",
+      "maxrate": "4800k",
+      "bufsize": "8000k"
     },
     {
       "width": 1280,
-      "height": 720
+      "height": 720,
+      "bitrate": "2000k"
     }
   ]
 }

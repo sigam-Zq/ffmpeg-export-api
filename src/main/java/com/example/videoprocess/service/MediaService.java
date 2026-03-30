@@ -16,12 +16,9 @@ import net.bramp.ffmpeg.builder.FFmpegBuilder;
 import net.bramp.ffmpeg.builder.FFmpegOutputBuilder;
 import net.bramp.ffmpeg.probe.FFmpegProbeResult;
 import net.bramp.ffmpeg.probe.FFmpegStream;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import jakarta.annotation.PostConstruct;
-import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -243,7 +240,8 @@ public class MediaService {
 
     public String processVideo(VideoProcessRequest request) throws Exception {
         Path tempInput = downloadFile(request.getObjectName());
-        Path tempOutput = Files.createTempFile("output-", "." + (request.getOutputFormat() != null ? request.getOutputFormat() : "mp4"));
+        String outputFormat = request.getOutputFormat() != null ? request.getOutputFormat() : "mp4";
+        Path tempOutput = Files.createTempFile("output-", "." + outputFormat);
         Path tempSubtitle = null;
 
         try {
@@ -254,7 +252,12 @@ public class MediaService {
                     .findFirst()
                     .orElseThrow(() -> new RuntimeException("No video stream found in input file"));
 
-            log.info("Input video: {}x{}, Duration: {}s", videoStream.width, videoStream.height, videoStream.duration);
+            log.info("Input video: {}x{}, codec={}, fps={}/{}, Duration={}s",
+                    videoStream.width, videoStream.height,
+                    videoStream.codec_name,
+                    videoStream.avg_frame_rate != null ? videoStream.avg_frame_rate.getNumerator() : "?",
+                    videoStream.avg_frame_rate != null ? videoStream.avg_frame_rate.getDenominator() : "?",
+                    videoStream.duration);
 
             // Validate crop
             if (request.getCropWidth() != null && request.getCropHeight() != null) {
@@ -262,64 +265,146 @@ public class MediaService {
                 int y = request.getCropY() != null ? request.getCropY() : 0;
                 if (x + request.getCropWidth() > videoStream.width || y + request.getCropHeight() > videoStream.height) {
                     throw new IllegalArgumentException(String.format(
-                        "Crop area (%d,%d %dx%d) exceeds video dimensions (%dx%d)", 
-                        x, y, request.getCropWidth(), request.getCropHeight(), videoStream.width, videoStream.height));
+                            "Crop area (%d,%d %dx%d) exceeds video dimensions (%dx%d)",
+                            x, y, request.getCropWidth(), request.getCropHeight(),
+                            videoStream.width, videoStream.height));
                 }
             }
 
+            String videoCodec = request.getVideoCodec() != null ? request.getVideoCodec() : "libx264";
+            boolean isCopy = "copy".equalsIgnoreCase(videoCodec);
+
+            // --- Use input-side seeking for fast seek (only when not using subtitle filter) ---
+            // Input-side seek (-ss before -i) is faster: FFmpeg skips to keyframe without decoding
+            // Output-side seek (-ss after -i) is frame-accurate but decodes from start
+            // If subtitles are applied we must use output-side seek for accuracy
+            boolean hasSubtitle = request.getSubtitle() != null
+                    && StringUtils.hasText(request.getSubtitle().getObjectName());
+
+            // Rebuild with full output options
             FFmpegOutputBuilder outputBuilder = new FFmpegBuilder()
                     .setInput(tempInput.toString())
                     .overrideOutputFiles(true)
                     .addOutput(tempOutput.toString());
 
-            if (request.getStartTime() != null) {
+            // Output-side seek (frame-accurate, used with subtitles or copy mode)
+            if (request.getStartTime() != null && (hasSubtitle || isCopy)) {
                 outputBuilder.setStartOffset((long) (request.getStartTime() * 1000), TimeUnit.MILLISECONDS);
             }
             if (request.getDuration() != null) {
                 outputBuilder.setDuration((long) (request.getDuration() * 1000), TimeUnit.MILLISECONDS);
             }
 
-            if (request.getBitrate() != null) {
-                // Convert kbps to bps
-                outputBuilder.setVideoBitRate(request.getBitrate() * 1000);
+            // --- Video codec settings ---
+            if (isCopy) {
+                outputBuilder.setVideoCodec("copy");
+            } else {
+                outputBuilder.setVideoCodec(videoCodec);
+
+                // Bitrate mode: CRF (quality-based) takes priority over target bitrate
+                if (request.getCrf() != null) {
+                    // CRF: constant quality mode, no target bitrate
+                    outputBuilder.addExtraArgs("-crf", String.valueOf(request.getCrf()));
+                } else if (request.getBitrate() != null) {
+                    outputBuilder.setVideoBitRate(request.getBitrate() * 1000L);
+                    // Set VBV buffer to 2× bitrate for smoother bitrate control
+                    outputBuilder.addExtraArgs("-maxrate", request.getBitrate() + "k",
+                            "-bufsize", (request.getBitrate() * 2) + "k");
+                }
+
+                // Encoding preset (speed/compression trade-off)
+                String preset = request.getPreset() != null ? request.getPreset() : "medium";
+                outputBuilder.addExtraArgs("-preset", preset);
+
+                // H.264 profile and level for compatibility
+                if (request.getProfile() != null) {
+                    outputBuilder.addExtraArgs("-profile:v", request.getProfile());
+                }
+                if (request.getLevel() != null) {
+                    outputBuilder.addExtraArgs("-level:v", request.getLevel());
+                }
+
+                // Pixel format: yuv420p for maximum compatibility (required for most devices/browsers)
+                outputBuilder.addExtraArgs("-pix_fmt", "yuv420p");
             }
 
+            // --- Audio codec settings ---
+            String audioCodec = request.getAudioCodec() != null ? request.getAudioCodec() : "aac";
+            outputBuilder.setAudioCodec(audioCodec);
+            if (!"copy".equalsIgnoreCase(audioCodec)) {
+                int audioBitrate = request.getAudioBitrate() != null ? request.getAudioBitrate() : 128;
+                outputBuilder.setAudioBitRate(audioBitrate * 1000L);
+            }
+
+            // --- Video filters ---
             int outputWidth = request.getCropWidth() != null ? request.getCropWidth() : videoStream.width;
             int outputHeight = request.getCropHeight() != null ? request.getCropHeight() : videoStream.height;
 
             List<String> videoFilters = new ArrayList<>();
+
+            // Crop filter
             if (request.getCropWidth() != null && request.getCropHeight() != null) {
-                String crop = String.format("crop=%d:%d:%d:%d", 
+                videoFilters.add(String.format("crop=%d:%d:%d:%d",
                         request.getCropWidth(), request.getCropHeight(),
                         request.getCropX() != null ? request.getCropX() : 0,
-                        request.getCropY() != null ? request.getCropY() : 0);
-                videoFilters.add(crop);
+                        request.getCropY() != null ? request.getCropY() : 0));
             }
 
-            if (request.getSubtitle() != null && StringUtils.hasText(request.getSubtitle().getObjectName())) {
+            // Scale filter (after crop, before subtitle)
+            if (request.getScaleWidth() != null || request.getScaleHeight() != null) {
+                int sw = request.getScaleWidth() != null ? request.getScaleWidth() : -2;
+                int sh = request.getScaleHeight() != null ? request.getScaleHeight() : -2;
+                // force_original_aspect_ratio=decrease ensures output fits in the box,
+                // -2 aligns dimension to be divisible by 2 (required for yuv420p)
+                videoFilters.add(String.format("scale=%d:%d:flags=lanczos", sw, sh));
+                outputWidth = request.getScaleWidth() != null ? request.getScaleWidth() : outputWidth;
+                outputHeight = request.getScaleHeight() != null ? request.getScaleHeight() : outputHeight;
+            }
+
+            // Subtitle filter (must be last in filter chain)
+            if (hasSubtitle) {
                 Path originalSubtitle = downloadFile(request.getSubtitle().getObjectName());
                 tempSubtitle = preprocessSubtitle(originalSubtitle, request.getSubtitle(), outputWidth, outputHeight);
-                
-                // Note: Windows path escaping might be tricky for FFmpeg subtitles filter.
-                // Usually forward slashes work best in FFmpeg even on Windows.
-                String subPath = tempSubtitle.toAbsolutePath().toString().replace("\\", "/").replace(":", "\\:");
-                
-                // Use the ASS file directly. No force_style needed as styles are embedded in ASS header.
-                StringBuilder subFilter = new StringBuilder("subtitles='").append(subPath).append("'");
-                videoFilters.add(subFilter.toString());
+                String subPath = tempSubtitle.toAbsolutePath().toString()
+                        .replace("\\", "/").replace(":", "\\:");
+                videoFilters.add("subtitles='" + subPath + "'");
             }
 
             if (!videoFilters.isEmpty()) {
                 outputBuilder.setVideoFilter(String.join(",", videoFilters));
             }
 
-            FFmpegBuilder builder = outputBuilder.done();
+            FFmpegBuilder finalBuilder = outputBuilder.done();
+            // Inject input-side fast seek when no subtitle is used
+            if (request.getStartTime() != null && !hasSubtitle && !isCopy) {
+                List<String> cmd = finalBuilder.build();
+                // Insert -ss before -i flag
+                List<String> patched = new ArrayList<>();
+                patched.add(cmd.get(0)); // ffmpeg binary
+                patched.add("-ss");
+                patched.add(String.valueOf(request.getStartTime()));
+                patched.addAll(cmd.subList(1, cmd.size()));
+                log.info("Executing FFmpeg command (fast-seek): {}", String.join(" ", patched));
+                ProcessBuilder pb = new ProcessBuilder(patched);
+                pb.redirectErrorStream(true);
+                Process proc = pb.start();
+                StringBuilder output = new StringBuilder();
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(proc.getInputStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) output.append(line).append("\n");
+                }
+                int code = proc.waitFor();
+                if (code != 0) {
+                    log.error("FFmpeg failed (code {}): {}", code, output);
+                    throw new RuntimeException("FFmpeg video processing failed with exit code " + code);
+                }
+            } else {
+                log.info("Executing FFmpeg command: {}", finalBuilder.build());
+                new FFmpegExecutor(ffmpeg, ffprobe).createJob(finalBuilder).run();
+            }
 
-            log.info("Executing FFmpeg command: {}", builder.build());
-            FFmpegExecutor executor = new FFmpegExecutor(ffmpeg, ffprobe);
-            executor.createJob(builder).run();
-
-            return uploadFile(tempOutput, request.getOutputFormat() != null ? request.getOutputFormat() : "mp4");
+            return uploadFile(tempOutput, outputFormat);
 
         } finally {
             Files.deleteIfExists(tempInput);
